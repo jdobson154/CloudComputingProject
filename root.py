@@ -1,98 +1,172 @@
 from flask import Flask, render_template, request
 from flask_bootstrap import Bootstrap
 import boto3
+import logging
 import os
+from botocore.exceptions import ClientError
+
+class DynamoDBHandler:
+    def __init__(self, dyn_resource):
+        self.dyn_resource = dyn_resource
+        self.table = None
+
+    def exists(self, table_name):
+        try:
+            table = self.dyn_resource.Table(table_name)
+            table.load()
+            exists = True
+        except ClientError as err:
+            if err.response["Error"]["Code"] == "ResourceNotFoundException":
+                exists = False
+            else:
+                logger.error(
+                    "Couldn't check for existence of %s. Here's why: %s: %s",
+                    table_name,
+                    err.response["Error"]["Code"],
+                    err.response["Error"]["Message"],
+                )
+                raise
+        else:
+            self.table = table
+        return exists
+
+    def create_table(self, table_name):
+        try:
+            self.table = self.dyn_resource.create_table(
+                TableName=table_name,
+                KeySchema=[
+                    {"AttributeName": "tournament", "KeyType": "HASH"},  # Partition key
+                    {"AttributeName": "bucket", "KeyType": "RANGE"},  # Sort key
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "tournament", "AttributeType": "S"},
+                    {"AttributeName": "bucket", "AttributeType": "S"},
+                ],
+                ProvisionedThroughput={
+                    "ReadCapacityUnits": 50,
+                    "WriteCapacityUnits": 50,
+                },
+            )
+            self.table.wait_until_exists()
+        except ClientError as err:
+            logger.error(
+                "Couldn't create table %s. Here's why: %s: %s",
+                table_name,
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
+        else:
+            return self.table
+
+    def list_tables(self):
+        try:
+            tables = []
+            for table in self.dyn_resource.tables.all():
+                tables.append(table)
+        except ClientError as err:
+            logger.error(
+                "Couldn't list tables. Here's why: %s: %s",
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
+        else:
+            return tables
+
+    def write_batch(self, data):
+        try:
+            with self.table.batch_writer() as writer:
+                for item in data:
+                    writer.put_item(Item=item)
+        except ClientError as err:
+            logger.error(
+                "Couldn't load data into table %s. Here's why: %s: %s",
+                self.table.name,
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
+
+    def add_data(self, data):
+        try:
+            self.table.put_item(Item=data)
+        except ClientError as err:
+            logger.error(
+                "Couldn't add data to table %s. Here's why: %s: %s",
+                self.table.name,
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
+
+    def get_data(self, key):
+        try:
+            response = self.table.get_item(Key=key)
+        except ClientError as err:
+            logger.error(
+                "Couldn't get data from table %s. Here's why: %s: %s",
+                self.table.name,
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
+        else:
+            return response.get('Item', {})
+
+os.environ['AWS_ACCESS_KEY_ID']='AKIA5FTY6XNS5FUPRJMZ'
+os.environ['AWS_SECRET_ACCESS_KEY']='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'
 
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
+logger = logging.getLogger(__name__)
 
-if 'AKIA5FTY6XNS5FUPRJMZ' in os.environ and 'LiKUUEGf5Pn1DNQjl/EtA0deFGMBT4tADkiO+iaE' in os.environ:
-    aws_access_key_id = os.environ['AKIA5FTY6XNS5FUPRJMZ']
-    aws_secret_access_key = os.environ['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']
-    dynamodb = boto3.resource('dynamodb', region_name='us-east-1', aws_access_key_id=aws_access_key_id,aws_secret_access_key=aws_secret_access_key)
-else:
-    dynamodb=boto3.resource('dynamodb',region_name='us-east-1')
 
-table_name='ssbmTable'
-table=dynamodb.Table(table_name)
+if 'AWS_ACCESS_KEY_ID' not in os.environ or 'AWS_SECRET_ACCESS_KEY' not in os.environ:
+    raise EnvironmentError("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.")
+
+region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')  # Default to 'us-east-1' if region is not set
+dynamodb_resource = boto3.resource('dynamodb', region_name=region)
+
+# Initialize DynamoDBHandler with boto3 DynamoDB resource
+dynamodb_handler=DynamoDBHandler(dynamodb_resource)
 
 @app.route('/')
 def home():
     return render_template('home.html')
 
-
 @app.route('/search')
 def search():
-    response = table.scan()
-    data=response.get('Items',[])
-    return render_template('search.html',data=data)
-
+    tables = dynamodb_handler.list_tables()
+    return render_template('search.html', tables=tables)
 
 @app.route('/search-submit', methods=['POST'])
 def searchSubmit():
-    if request.method == 'POST':
-        ID = request.form['searchID']
-        tournament = request.form['searchTournament']
-        p1 = request.form['searchPlayer1']
-        p2 = request.form['searchPlayer2']
-        score = request.form['searchScore']
-        winner = request.form['searchWinner']
-        bracket = request.form['searchBracket']
+    filters = {}
+    for key in request.form:
+        if request.form[key]:
+            filters[key] = request.form[key]
 
-        filters={}
-        if ID:
-            filters['id'] = ID
-        if tournament:
-            filters['tournament'] = tournament
-        if p1 or p2:
-            filters['p1'] = p1
-            filters['p2'] = p2
-        if score != 'Any':
-            filters['score'] = score
-        if winner:
-            filters['winner'] = winner
-        if bracket != 'Any':
-            filters['bracket'] = bracket
-
-        response = table.scan(FilterExpression=' and '.join([f'#{key} = :{key}' for key in filters.keys()]),
-                              ExpressionAttributeNames={f'#{key}': key for key in filters.keys()},
-                              ExpressionAttributeValues={f':{key}': value for key, value in filters.items()})
-        data = response.get('Items', [])
-        return render_template('search-submit.html', data=data)
-
+    data = dynamodb_handler.get_data(filters)
+    return render_template('search-submit.html', data=data)
 
 @app.route('/insert')
 def insert():
     return render_template('insert.html')
 
-
 @app.route('/insert-submit', methods=['POST'])
 def insertSubmit():
-    if request.method == 'POST':
-        tournament = request.form['insertTournament']
-        p1 = request.form['insertPlayer1']
-        p2 = request.form['insertPlayer2']
-        score = request.form['insertScore']
-        winner = request.form['insertWinner']
-        bracket = request.form['insertBracket']
+    data = {
+        'tournament': request.form['insertTournament'],
+        'p1': request.form['insertPlayer1'],
+        'p2': request.form['insertPlayer2'],
+        'score': request.form['insertScore'],
+        'winner': request.form['insertWinner'],
+        'bracket': request.form['insertBracket']
+    }
 
-        response = table.put_item(
-            Item={
-                'tournament': tournament,
-                'p1': p1,
-                'p2': p2,
-                'score': score,
-                'winner': winner,
-                'bracket': bracket
-            }
-        )
-
-
-        ID = response['Attributes']['id']
-
-        return render_template('insert-submit.html', data=[ID, tournament, p1, p2, score, winner, bracket])
-
-    return render_template('insert-submit.html', data='error')
+    dynamodb_handler.add_data(data)
+    return render_template('insert-submit.html', data=data)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
