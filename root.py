@@ -158,8 +158,8 @@ def insert():
 def insertSubmit():
     data = {
         'tournament': request.form['insertTournament'],
-        'p1': request.form['insertPlayer1'],
-        'p2': request.form['insertPlayer2'],
+        'p1': request.form['insertTeam1'],
+        'p2': request.form['insertTeam2'],
         'score': request.form['insertScore'],
         'winner': request.form['insertWinner'],
         'bracket': request.form['insertBracket']
