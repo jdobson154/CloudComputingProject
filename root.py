@@ -114,8 +114,8 @@ class DynamoDBHandler:
         else:
             return response.get('Item', {})
 
-os.environ['AWS_ACCESS_KEY_ID']='AKIA5FTY6XNS5FUPRJMZ'
-os.environ['AWS_SECRET_ACCESS_KEY']='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'
+os.environ['AWS_ACCESS_KEY_ID']=''
+os.environ['AWS_SECRET_ACCESS_KEY']=''
 
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
