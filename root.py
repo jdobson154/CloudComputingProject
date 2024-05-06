@@ -1,9 +1,25 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, redirect, url_for
 from flask_bootstrap import Bootstrap
 import boto3
 import logging
 import os
-from botocore.exceptions import ClientError
+import botocore
+import botocore.exceptions
+
+os.environ['AWS_ACCESS_KEY_ID']='enter key' #!!!!!
+os.environ['AWS_SECRET_ACCESS_KEY']='enter secret key' #!!!!!
+
+app = Flask(__name__)
+bootstrap = Bootstrap(app)
+logger = logging.getLogger(__name__)
+
+
+if 'AWS_ACCESS_KEY_ID' not in os.environ or 'AWS_SECRET_ACCESS_KEY' not in os.environ:
+    raise EnvironmentError("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.")
+
+region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')  # Default to 'us-east-1' if region is not set
+dynamodb_resource = boto3.resource('dynamodb', region_name=region)
+
 
 class DynamoDBHandler:
     def __init__(self, dyn_resource):
@@ -36,16 +52,13 @@ class DynamoDBHandler:
                 TableName=table_name,
                 KeySchema=[
                     {"AttributeName": "tournament", "KeyType": "HASH"},  # Partition key
-                    {"AttributeName": "bucket", "KeyType": "RANGE"},  # Sort key
+                    {"AttributeName": "id", "KeyType": "RANGE"},  # Sort key
                 ],
                 AttributeDefinitions=[
                     {"AttributeName": "tournament", "AttributeType": "S"},
-                    {"AttributeName": "bucket", "AttributeType": "S"},
+                    {"AttributeName": "id", "AttributeType": "N"}
                 ],
-                ProvisionedThroughput={
-                    "ReadCapacityUnits": 50,
-                    "WriteCapacityUnits": 50,
-                },
+                BillingMode='PAY_PER_REQUEST'
             )
             self.table.wait_until_exists()
         except ClientError as err:
@@ -59,35 +72,6 @@ class DynamoDBHandler:
         else:
             return self.table
 
-    def list_tables(self):
-        try:
-            tables = []
-            for table in self.dyn_resource.tables.all():
-                tables.append(table)
-        except ClientError as err:
-            logger.error(
-                "Couldn't list tables. Here's why: %s: %s",
-                err.response["Error"]["Code"],
-                err.response["Error"]["Message"],
-            )
-            raise
-        else:
-            return tables
-
-    def write_batch(self, data):
-        try:
-            with self.table.batch_writer() as writer:
-                for item in data:
-                    writer.put_item(Item=item)
-        except ClientError as err:
-            logger.error(
-                "Couldn't load data into table %s. Here's why: %s: %s",
-                self.table.name,
-                err.response["Error"]["Code"],
-                err.response["Error"]["Message"],
-            )
-            raise
-
     def add_data(self, data):
         try:
             self.table.put_item(Item=data)
@@ -100,36 +84,50 @@ class DynamoDBHandler:
             )
             raise
 
-    def get_data(self, key):
-        try:
-            response = self.table.get_item(Key=key)
-        except ClientError as err:
-            logger.error(
-                "Couldn't get data from table %s. Here's why: %s: %s",
-                self.table.name,
-                err.response["Error"]["Code"],
-                err.response["Error"]["Message"],
-            )
-            raise
-        else:
-            return response.get('Item', {})
+    
+def generateID():
+    table = dynamodb_resource.Table('lolTable')
+    response = table.scan()
+    tableEntries = response['Items']
 
-os.environ['AWS_ACCESS_KEY_ID']=''
-os.environ['AWS_SECRET_ACCESS_KEY']=''
+    if len(tableEntries) == 0:
+        return 1
+    
+    idList = []
+    for entry in tableEntries:
+        idList.append(entry['id'])
+        
+    nextID = max(idList) + 1
+    return nextID
 
-app = Flask(__name__)
-bootstrap = Bootstrap(app)
-logger = logging.getLogger(__name__)
-
-
-if 'AWS_ACCESS_KEY_ID' not in os.environ or 'AWS_SECRET_ACCESS_KEY' not in os.environ:
-    raise EnvironmentError("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.")
-
-region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')  # Default to 'us-east-1' if region is not set
-dynamodb_resource = boto3.resource('dynamodb', region_name=region)
-
-# Initialize DynamoDBHandler with boto3 DynamoDB resource
-dynamodb_handler=DynamoDBHandler(dynamodb_resource)
+def generateQuery(keys):
+    table = dynamodb_resource.Table('lolTable')
+    filters = {}
+    filterExp = ''
+    expAttrVals = {}
+    expAttrNames = {}
+    
+    for key in keys:
+        if request.form[key]:
+            filters[key] = request.form[key]
+        
+    for i, (key, value) in enumerate(filters.items(), start=1):
+        expAttrNameKey = f'#attr{i}'
+        expAttrValKey = f':val{i}'
+        expAttrNames[expAttrNameKey] = key
+        expAttrVals[expAttrValKey] = int(value) if key == 'id' else value
+        filterExp += f'{expAttrNameKey} = {expAttrValKey} AND '
+            
+    if filterExp:
+        filterExp = filterExp[:-5]
+            
+    response = table.scan(
+        FilterExpression=filterExp,
+        ExpressionAttributeNames=expAttrNames,
+        ExpressionAttributeValues=expAttrVals
+    )
+    
+    return response
 
 @app.route('/')
 def home():
@@ -137,18 +135,44 @@ def home():
 
 @app.route('/search')
 def search():
-    tables = dynamodb_handler.list_tables()
-    return render_template('search.html', tables=tables)
+    data = []
+    table = dynamodb_resource.Table('lolTable')
+    response = table.scan()
+    tableEntries = response['Items']
+    
+    for entry in tableEntries:
+        newEntry = []
+        
+        for i in range(len(entry)):
+            newEntry.append(entry['id'])
+            newEntry.append(entry['tournament'])
+            newEntry.append(entry['t1'])
+            newEntry.append(entry['t2'])
+            newEntry.append(entry['score'])
+            newEntry.append(entry['winner'])
+            newEntry.append(entry['bracket'])
+        
+        data.append(newEntry)
+        
+    return render_template('search.html', data=data)
 
 @app.route('/search-submit', methods=['POST'])
 def searchSubmit():
-    filters = {}
-    for key in request.form:
-        if request.form[key]:
-            filters[key] = request.form[key]
-
-    data = dynamodb_handler.get_data(filters)
-    return render_template('search-submit.html', data=data)
+    data = []
+    keys = request.form.keys()
+    
+    try:
+        response = generateQuery(keys)
+        tableEntries = response['Items']
+        
+        for entry in tableEntries:
+            newEntry = [entry.get(key, '') for key in keys]
+            data.append(newEntry)
+            
+        return render_template('search-submit.html', data=data)
+    
+    except botocore.exceptions.ClientError:
+        return redirect(url_for('search'))
 
 @app.route('/insert')
 def insert():
@@ -157,16 +181,24 @@ def insert():
 @app.route('/insert-submit', methods=['POST'])
 def insertSubmit():
     data = {
+        'id': generateID(),
         'tournament': request.form['insertTournament'],
-        'p1': request.form['insertTeam1'],
-        'p2': request.form['insertTeam2'],
+        't1': request.form['insertTeam1'],
+        't2': request.form['insertTeam2'],
         'score': request.form['insertScore'],
         'winner': request.form['insertWinner'],
         'bracket': request.form['insertBracket']
     }
 
-    dynamodb_handler.add_data(data)
+    handler.add_data(data)
     return render_template('insert-submit.html', data=data)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    
+    tableName = "lolTable"
+    handler = DynamoDBHandler(dynamodb_resource)
+    
+    if not handler.exists(table_name=tableName):
+        handler.create_table(tableName)
+    
+    app.run(host='0.0.0.0', port=11278)
