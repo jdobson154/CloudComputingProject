@@ -6,8 +6,8 @@ import os
 import botocore
 import botocore.exceptions
 
-os.environ['AWS_ACCESS_KEY_ID']='enter key' #!!!!!
-os.environ['AWS_SECRET_ACCESS_KEY']='enter secret key' #!!!!!
+os.environ['AWS_ACCESS_KEY_ID']='aws_access_key' #!!!!!
+os.environ['AWS_SECRET_ACCESS_KEY']='aws_secret_access_key' #!!!!!
 
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
@@ -106,27 +106,27 @@ def generateQuery(keys):
     filterExp = ''
     expAttrVals = {}
     expAttrNames = {}
-    
+
     for key in keys:
         if request.form[key]:
             filters[key] = request.form[key]
-        
+
     for i, (key, value) in enumerate(filters.items(), start=1):
         expAttrNameKey = f'#attr{i}'
         expAttrValKey = f':val{i}'
         expAttrNames[expAttrNameKey] = key
         expAttrVals[expAttrValKey] = int(value) if key == 'id' else value
         filterExp += f'{expAttrNameKey} = {expAttrValKey} AND '
-            
+
     if filterExp:
         filterExp = filterExp[:-5]
-            
+
     response = table.scan(
         FilterExpression=filterExp,
         ExpressionAttributeNames=expAttrNames,
         ExpressionAttributeValues=expAttrVals
     )
-    
+
     return response
 
 @app.route('/')
@@ -164,11 +164,11 @@ def searchSubmit():
     try:
         response = generateQuery(keys)
         tableEntries = response['Items']
-        
+
         for entry in tableEntries:
             newEntry = [entry.get(key, '') for key in keys]
             data.append(newEntry)
-            
+
         return render_template('search-submit.html', data=data)
     
     except botocore.exceptions.ClientError:
@@ -189,6 +189,10 @@ def insertSubmit():
         'winner': request.form['insertWinner'],
         'bracket': request.form['insertBracket']
     }
+
+    # Check if the winner is either t1 or t2
+    if data['winner'] != data['t1'] and data['winner'] != data['t2']:
+        return "Invalid winner entered. Winner must be either Team 1 or Team 2."
 
     handler.add_data(data)
     return render_template('insert-submit.html', data=data)
