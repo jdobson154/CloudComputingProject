@@ -4,10 +4,10 @@ import boto3
 import logging
 import os
 import botocore
-import botocore.exceptions
+from botocore.exceptions import ClientError
 
-os.environ['AWS_ACCESS_KEY_ID'] = 'AWS_Access_key'  # !!!!!
-os.environ['AWS_SECRET_ACCESS_KEY'] = 'AWS_Secret_Key'  # !!!!!
+os.environ['AWS_ACCESS_KEY_ID'] = ''  # !!!!!
+os.environ['AWS_SECRET_ACCESS_KEY'] = ''  # !!!!!
 
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
